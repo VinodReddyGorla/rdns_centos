@@ -1,0 +1,24 @@
+$ORIGIN .
+$TTL    604800  ; 1 week
+zone       IN      SOA    master_hostname. admin.master_domine. (
+                              3010202028     ; Serial
+                              10800          ; Refresh ( 3 hrs )
+                              15             ; Retry   (15 seconds )
+                              604800         ; Expire
+                              604800 )       ; Negative Cache TTL
+
+;name servers
+
+      IN      NS      master_hostname.	; master
+      IN      NS      slave1_hostname.	; slave1
+      IN      NS      slave1_hostname.	; slave2
+
+
+; PTR records
+
+$ORIGIN  zone.
+
+
+171       IN      PTR     ns1.dnsmaster.com.
+172       IN      PTR     ns2.dnsslave1.com.
+173       IN      PTR     ns3.dnsslave2.com.

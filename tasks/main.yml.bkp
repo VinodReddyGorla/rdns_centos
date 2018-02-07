@@ -1,0 +1,140 @@
+---
+# tasks file for rdnsmaster
+  - name: setting hostname for master...
+    command: hostnamectl set-hostname "{{ master_hostname }}"
+  - name: installing required packeges for rDNS...
+    yum:
+      name: "{{ item }}"
+      state: latest
+    with_items:
+         - bind-utils
+         - bind
+         - bind-chroot
+         - sshpass
+  - name: stoping and disabling named service...
+    service:
+          name: named
+          state: stopped
+          enabled: no
+  - name: Initializing the /var/named/chroot environment...
+    command: /usr/libexec/setup-named-chroot.sh /var/named/chroot on
+  #- name: creating  a symbolic link for  named-chroot.service...
+   # command: ln -s '/usr/lib/systemd/system/named-chroot.service' '/etc/systemd/system/multi-user.target.wants/named-chroot.service'
+  - name: generating TSIG key...
+    command: "dnssec-keygen -r /dev/urandom -a HMAC-MD5 -b 512  -n USER rdnskey"
+  - name: configuring named.conf...
+    template: src=/root/ansiblefiles/rdns/named.conf.j2   dest=/etc/named.conf
+  - name: setting slave1 ip in named.conf...
+    replace:
+            path: /etc/named.conf
+            regexp: slave1;
+            replace: "{{ slave1_ip}};"
+  - name: setting slave2 ip in named.conf...
+    replace:
+          path: /etc/named.conf
+          regexp: slave2;
+          replace: "{{ slave2_ip}};"
+  - name: setting client1 ip in named.conf...
+    replace:
+            path: /etc/named.conf
+            regexp: client1;
+            replace: "{{ master_ip}};"
+  - name: setting client2 ip in named.conf...
+    replace:
+          path: /etc/named.conf
+          regexp: client2;
+          replace: "{{ slave1_ip}};"
+  - name: setting client3 ip in named.conf...
+    replace:
+          path: /etc/named.conf
+          regexp: client3;
+          replace: "{{ slave2_ip}};"
+  - name : setting listen-on ipaddress in named.conf...
+    replace:
+          path: /etc/named.conf
+          regexp: listen-on port 53 { 127.0.0.1;systemIP; };
+          replace: listen-on port 53 { 127.0.0.1;{{ master_ip }}; };
+  - name: creating reverse-zone file...
+    file:
+       path: /etc/named/named.zones
+       state: touch
+  - name: configuring revers-zone file...
+    template: src=/root/ansiblefiles/rdns/named.zones.master.j2   dest=/etc/named/named.zones
+  - name: crating record file path...
+    command: mkdir -p /etc/named/zones/reverse/master
+  - name: creating amd configuring record file...
+    file:
+       path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+       state: touch
+  - template: src=/root/ansiblefiles/rdns/zone.reverse.master.192.168.32.j2   dest=/etc/named/zones/reverse/master/zone.reverse.192.168.32
+  - name: setting zone in record file...
+    replace:
+          path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+          regexp:  zone       IN      SOA     master_hostname. admin.master_domine. (
+          replace: {{ zone }}       IN      SOA     {{ master_hostname }}. admin.{{ master_domine }}.
+  - name: setting master NS in record file...
+    replace:
+          path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+          regexp:  IN      NS      master_hostname.
+          replace: IN      NS      {{ master_hostname }}.
+  - name: setting slave1 NS in record file...
+    replace:
+          path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+          regexp:   IN      NS      slave1_hostname.
+          replace:  IN      NS     {{ slave1_hostname }}.
+  - name: setting slave2 NS in record file...
+    replace:
+          path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+          regexp:  IN      NS      slave1_hostname.
+          replace: IN      NS      {{ slave1_hostname }}.
+  - name: changing the owner of /var/named/chroot folder...
+    file:
+       path: /var/named/chroot
+       owner: named
+       group: named
+  - replace:
+           path: /etc/named.conf
+           regexp:  inet systemIP port 953
+           replace:  inet  {{master_ip }} port 953
+  - name: configuring TSIG key...
+    shell: cat /home/vinod/Krdnskey.*.key | awk '{print $7,$8}'
+    register: key
+  - replace:
+          path: /etc/named.conf
+          regexp: "TSIG key"
+          replace: "{{ key.stdout }}"
+  - name: sending TSIG key to slave1...
+    shell:  sshpass -v  -p {{ password }}  scp -r -o StrictHostKeyChecking=no  /home/vinod/Krdnskey.*  {{ user_name }}@{{ slave1_ip }}:/home/vinod
+  - name: sending TSIG key to slave2...
+    shell:  sshpass -v  -p {{ password }}  scp -r -o StrictHostKeyChecking=no  /home/vinod/Krdnskey.*  {{ user_name }}@{{ slave2_ip }}:/home/vinod
+  - name: starting and enebling firewalld  service...  
+    service:
+          name: firewalld
+          state: started
+          enabled: yes
+  - name: Creating sdtl2 zone for firewalld...
+    command: firewall-cmd --permanent --new-zone=sdtl2
+  - name: reloading firewall 
+    command: firewall-cmd --reload
+  - name: Changing intarface...
+    command: firewall-cmd --permanent --zone=sdtl2 --change-interface=ens33
+  - name: Adding ports to firewalld...
+    firewalld: 
+            zone: sdtl2
+            port: "{{ item }}" 
+            permanent: true 
+            state: enabled
+    with_items: "{{ ports }}"
+  - name: reloading firewall
+    command: firewall-cmd --reload   
+  - name: starting and enebling named-chroot service...
+    service:
+          name: named-chroot
+          state: started
+          enabled: yes
+  - name: restarting named-chroot service...
+    service:
+          name: named-chroot
+          state: restarted
+
+

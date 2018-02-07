@@ -1,0 +1,6 @@
+zone "32.168.192.in-addr.arpa" {
+    type master;
+    file "/etc/named/zones/reverse/master/zone.reverse.192.168.32";
+    allow-transfer { 192.168.32.172; 192.168.32.173; };
+    allow-update { key "rdnskey"; };
+    };

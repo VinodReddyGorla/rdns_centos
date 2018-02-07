@@ -1,0 +1,235 @@
+---
+###################### HOSTNAME SETUP ##########################
+
+
+
+  - name: setting hostname for master...
+    command: hostnamectl set-hostname "{{ master_hostname }}"
+
+
+
+##################### PACKAGE INSTALLATION #####################
+
+
+
+  - name: installing required packeges for rDNS...
+    yum:
+      name: "{{ item }}"
+      state: latest
+    with_items:
+         - bind-utils
+         - bind
+         - bind-chroot
+         - sshpass
+
+
+####################  STOPPING NAMED SERVICE ###################
+
+
+
+  - name: stoping and disabling named service...
+    service:
+          name: named
+          state: stopped
+          enabled: no
+
+
+###################  INITIALIZING CHROOT ENVIRONMENT & CREATING SOFT LINK ##################
+
+
+  - name: Initializing the /var/named/chroot environment...
+    command: /usr/libexec/setup-named-chroot.sh /var/named/chroot on
+  - name: creating  a symbolic link for  named-chroot.service...
+    command: ln -s '/usr/lib/systemd/system/named-chroot.service' '/etc/systemd/system/multi-user.target.wants/named-chroot.service'
+    ignore_errors: yes
+
+
+################### TSIG KEY GENARATION ###########################
+
+
+
+  - name: generating TSIG key...
+    command: "dnssec-keygen -r /dev/urandom -a HMAC-MD5 -b 512  -n USER rdnskey"
+
+
+
+#################### NAMED.CONF CONFIGURATION ############################
+
+
+
+  - name: configuring named.conf...
+    template: src=/etc/ansible/roles/rdnsmaster/inputs/named.conf.j2   dest=/etc/named.conf
+  - name: setting slave1 ip in named.conf...
+    replace:
+          path: /etc/named.conf
+          regexp: slave1;
+          replace: "{{ slave1_ip}};"
+  - name: setting slave2 ip in named.conf...
+    replace:
+          path: /etc/named.conf
+          regexp: slave2;
+          replace: "{{ slave2_ip}};"
+  - name: setting acl for trustedlan in named.conf
+    lineinfile:
+             path: /etc/named.conf
+             insertafter: '#allow_query_clients'
+             line: "{{ item }}"
+    with_items: "{{ allow_query_clients }}"
+  - name : setting listen-on ipaddress in named.conf...
+    replace:
+          path: /etc/named.conf
+          regexp: listen-on port 53 { 127.0.0.1;systemIP; };
+          replace: listen-on port 53 { 127.0.0.1;{{ master_ip }}; };
+
+
+
+########################### REVERSE-ZONE FILE CONFIGURATION ###########################
+
+
+
+  - name: creating reverse-zone file...
+    file:
+       path: /etc/named/named.zones
+       state: touch
+  - name: configuring revers-zone file...
+    template: src=/etc/ansible/roles/rdnsmaster/inputs/named.zones.master.j2   dest=/etc/named/named.zones
+  - name: crating record file path...
+    file:
+       path: /etc/named/zones/reverse/master
+       state: directory
+  - name: creating amd configuring record file...
+    file:
+       path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+       state: touch
+  - template: src=/etc/ansible/roles/rdnsmaster/inputs/zone.reverse.master.192.168.32.j2   dest=/etc/named/zones/reverse/master/zone.reverse.192.168.32
+  - name: setting zone in record file...
+    replace:
+          path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+          regexp:  zone       IN      SOA    master_hostname. admin.master_domine.
+          replace: '{{ zone }}       IN      SOA    {{ master_hostname }}. admin.{{ master_domine }}.'
+  - name: setting $ORIGIN in record file...
+    replace:
+          path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+          regexp: zone
+          replace: '{{ zone }}'
+
+
+
+
+  - name: setting master NS in record file...
+    replace:
+          path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+          regexp:  IN      NS      master_hostname.
+          replace: IN      NS      {{ master_hostname }}.
+  - name: setting slave1 NS in record file...
+    replace:
+          path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+          regexp:   IN      NS      slave1_hostname.
+          replace:  IN      NS     {{ slave1_hostname }}.
+  - name: setting slave2 NS in record file...
+    replace:
+          path: /etc/named/zones/reverse/master/zone.reverse.192.168.32
+          regexp:  IN      NS      slave1_hostname.
+          replace: IN      NS      {{ slave1_hostname }}.
+
+
+
+############################  CHANGING OWNER & GROUP TO CHROOT #########################
+
+
+
+  - name: changing the owner of /var/named/chroot folder...
+    file:
+       path: /var/named
+       owner: named
+       group: named
+       recurse: yes
+  - name: changing the owner of /etc/named folder recrsely...
+    file:
+       path: /etc/named
+       owner: named
+       group: named
+       recurse: yes
+  - replace:
+           path: /etc/named.conf
+           regexp:  inet systemIP port 953
+           replace:  inet  {{master_ip }} port 953
+
+
+############################### TSIG KEY COPYING TO NAMED.CONF FILE  ######################
+ 
+
+
+  - name: configuring TSIG key...
+    shell: cat /home/vinod/Krdnskey.*.key | awk '{print $7,$8}'
+    register: key
+  - replace:
+          path: /etc/named.conf
+          regexp: "TSIG key"
+          replace: "{{ key.stdout }}"
+
+
+############################## COPING TSIG-KEY TO SLAVE NODES  ############################
+
+
+
+  - name: sending TSIG key to slave1...
+    shell:  sshpass -v  -p {{ password }}  scp -r -o StrictHostKeyChecking=no  /home/vinod/Krdnskey.*  {{ user_name }}@{{ slave1_ip }}:/home/vinod
+  - name: sending TSIG key to slave2...
+    shell:  sshpass -v  -p {{ password }}  scp -r -o StrictHostKeyChecking=no  /home/vinod/Krdnskey.*  {{ user_name }}@{{ slave2_ip }}:/home/vinod
+
+
+
+############################# FIREWALLD CONFIGURATION  ####################################
+
+
+
+  - include: /etc/ansible/roles/dns-cachemaster-centos/supported-ymls/firewall1.yml
+    when: (no_zones_interfaces == "1")
+    ignore_errors: yes
+  - include: /etc/ansible/roles/dns-cachemaster-centos/supported-ymls/firewall2.yml
+    when: (no_zones_interfaces == "2")
+    ignore_errors: yes
+  - include: /etc/ansible/roles/dns-cachemaster-centos/supported-ymls/firewall3.yml
+    when: (no_zones_interfaces == "3")
+    ignore_errors: yes
+  - include: /etc/ansible/roles/dns-cachemaster-centos/supported-ymls/firewall4.yml
+    when: (no_zones_interfaces == "4")
+    ignore_errors: yes
+  - include: /etc/ansible/roles/dns-cachemaster-centos/supported-ymls/firewall5.yml
+    when: (no_zones_interfaces == "5")
+    ignore_errors: yes
+
+ 
+
+
+########################### RESTARTING NETWORK SERVICE  #############################################
+
+    
+
+  - name: restarting NetworkManager service...
+    service:
+          name: NetworkManager
+          state: restarted  
+
+
+
+############################  STARTING AND ENABLING,RESTARTING NAMED-CHROOT SERVICE  ######################
+
+
+
+  - name: starting and enebling named-chroot service...
+    service:
+          name: named-chroot
+          state: started
+          enabled: yes
+  - name: restarting named-chroot service...
+    service:
+          name: named-chroot
+          state: restarted
+    tags: named-chroot
+
+
+
+
+########################## END OF PLAYBOOK  #####################################################
